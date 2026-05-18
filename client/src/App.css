@@ -1,0 +1,20 @@
+/* App container spacing */
+.main h1 {
+  margin-bottom: 20px;
+}
+
+/* spacing between sections */
+.form-box {
+  margin-bottom: 20px;
+}
+
+/* make dashboard cards wrap nicely on small screens */
+@media (max-width: 768px) {
+  .dashboard {
+    justify-content: center;
+  }
+
+  .forms-row {
+    flex-direction: column;
+  }
+}
