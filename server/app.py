@@ -36,18 +36,18 @@ api = Api(app)
 
 socketio = SocketIO(
     app,
-    cors_allowed_origins="*",
+    cors_allowed_origins="https://riseway.vercel.app",
     async_mode="eventlet"
 )
 
 CORS(
     app,
     supports_credentials=True,
-    resources={
-        r"/api/*": {
-            "origins": [
-                "https://riseway.vercel.app"
-    ]}}
+    origins=[
+        "https://riseway.vercel.app"
+    ],
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 )
 
 SECRET_KEY = os.environ.get("JWT_SECRET", "riseway-secret-key-change-in-prod")
