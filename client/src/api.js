@@ -1,10 +1,7 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: "http://localhost:5000/api",
-  // ✅ Removed withCredentials: true — not needed for JWT header auth.
-  // It's only for cookie-based sessions and causes strict CORS preflight
-  // failures when the backend throws any error before headers are set.
+  baseURL: import.meta.env.VITE_API_URL,
 });
 
 api.interceptors.request.use((config) => {
