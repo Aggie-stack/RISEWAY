@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from flask_migrate import Migrate
 from flask_sqlalchemy import SQLAlchemy
-from flask_restful import Api
 
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
@@ -17,6 +16,8 @@ from flask_cors import CORS
 
 import models
 from database import create_tables
+from dotenv import load_dotenv
+load_dotenv()
 
 
 # ─────────────────────────────────────────────
@@ -24,15 +25,13 @@ from database import create_tables
 # ─────────────────────────────────────────────
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URI')
+app.config['SQLALCHEMY_DATABASE_URI'] = "sqlite:///riseway.db"
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.json.compact = False
 
 db = SQLAlchemy()
 migrate = Migrate(app, db)
 db.init_app(app)
-
-api = Api(app)
 
 socketio = SocketIO(
     app,
@@ -50,8 +49,15 @@ CORS(
     methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"]
 )
 
-SECRET_KEY = os.environ.get("JWT_SECRET", "riseway-secret-key-change-in-prod")
+# FIX: raise if JWT_SECRET is missing instead of falling back to a known weak key
+SECRET_KEY = os.environ.get("JWT_SECRET")
+if not SECRET_KEY:
+    raise RuntimeError("JWT_SECRET environment variable not set")
+
 TOKEN_HOURS = 12
+
+# FIX: single source of truth for expected fee
+EXPECTED_FEE = 10000
 
 
 # ─────────────────────────────────────────────
@@ -128,6 +134,21 @@ def init_db():
         print("Seeded default users")
     else:
         print("Users already exist")
+
+
+# FIX: run init_db inside app context at module level so gunicorn/eventlet picks it up
+with app.app_context():
+    init_db()
+
+
+# ─────────────────────────────────────────────
+# HEALTH CHECK
+# ─────────────────────────────────────────────
+
+# FIX: added health route so Render health checks don't hit a 401
+@app.route("/api/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok"}), 200
 
 
 # ─────────────────────────────────────────────
@@ -224,10 +245,6 @@ def get_balance_by_admission(admission_number):
             "duration": 0,
         }), 200
 
-    # TEMPORARY EXPECTED FEE
-    expected_fee = 10000
-
-    # GET STUDENT PAYMENTS
     payments = models.get_payments_by_student(student["id"])
 
     total_paid = sum(
@@ -237,7 +254,7 @@ def get_balance_by_admission(admission_number):
 
     latest_payment = payments[-1] if payments else {}
 
-    balance = max(expected_fee - total_paid, 0)
+    balance = max(EXPECTED_FEE - total_paid, 0)
 
     return jsonify({
         "student_id": student["id"],
@@ -260,13 +277,11 @@ def create_student():
     if missing:
         return jsonify({"error": f"Missing fields: {', '.join(missing)}"}), 400
 
-    # create student FIRST (real DB insert)
     student = models.create_student(data)
 
     if not student:
         return jsonify({"error": "Failed to create student"}), 500
 
-    # THEN emit real-time notification
     socketio.emit("new_student", {
         "message": f"New student registered: {student['name']}",
         "student": student
@@ -287,8 +302,9 @@ def update_student(student_id):
     return jsonify(updated), 200
 
 
+# FIX: restricted delete to director and admin — receptionists should not delete students
 @app.route("/api/students/<int:student_id>", methods=["DELETE"])
-@role_required("receptionist")
+@role_required("director", "admin")
 def delete_student(student_id):
     deleted = models.delete_student(student_id)
 
@@ -312,7 +328,6 @@ def get_payments(student_id):
 def create_payment():
     data = request.get_json() or {}
 
-    # Resolve admission number → student ID
     raw_id = str(data.get("student_id", "")).strip()
 
     if raw_id and not raw_id.isdigit():
@@ -325,33 +340,28 @@ def create_payment():
 
         data["student_id"] = student["id"]
 
-    # Ensure numeric student_id
+    # FIX: narrowed exception to only catch relevant conversion errors
     try:
         data["student_id"] = int(data["student_id"])
-    except:
+    except (ValueError, TypeError):
         return jsonify({"error": "Invalid student ID"}), 400
 
-    # Validate required fields
     required = ["student_id", "amount", "date_paid", "duration"]
 
     if not all(data.get(f) for f in required):
         return jsonify({"error": "Missing payment fields"}), 400
 
-    # Check old payments BEFORE inserting
     existing_payments = models.get_payments_by_student(
         data["student_id"]
     )
 
-    # Create payment
     payment = models.create_payment(data)
 
     if not payment:
         return jsonify({"error": "Failed to create payment"}), 500
 
-    # Get student
     student = models.get_student_by_id(data["student_id"])
 
-    # Emit ONLY for renewals
     if existing_payments and student:
         socketio.emit("student_renewed", {
             "message": f"{student['name']} renewed subscription",
@@ -402,8 +412,6 @@ def get_student_balance(student_id):
     if not student:
         return jsonify({"error": "Student not found"}), 404
 
-    expected_fee = 10000
-
     payments = models.get_payments_by_student(student_id)
 
     total_paid = sum(
@@ -413,7 +421,7 @@ def get_student_balance(student_id):
 
     latest_payment = payments[-1] if payments else {}
 
-    balance = max(expected_fee - total_paid, 0)
+    balance = max(EXPECTED_FEE - total_paid, 0)
 
     return jsonify({
         "student_id": student["id"],
@@ -440,7 +448,6 @@ def dashboard():
 @app.route("/api/dashboard/courses", methods=["GET"])
 @role_required("director")
 def dashboard_courses():
-    # FIX: pass month filter through so course stats respect monthly view
     month = request.args.get("month")
     month = int(month) if month else None
     return jsonify(models.get_course_stats(month=month)), 200
@@ -451,7 +458,6 @@ def dashboard_courses():
 def recent_payments():
     days = request.args.get("days", "7")
 
-    # FIX: "all" → None so get_recent_payments skips the date filter entirely
     if days == "all":
         days = None
     else:
@@ -474,5 +480,4 @@ def renewals_due():
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    init_db()
     socketio.run(app, debug=True, port=5000)
