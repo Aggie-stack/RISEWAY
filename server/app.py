@@ -43,11 +43,10 @@ socketio = SocketIO(
 CORS(
     app,
     supports_credentials=True,
-    resources={r"/api/*": {"origins": [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
+    resources={
+        r"/api/*": {
+            "origins": [
+                "https://riseway.vercel.app"
     ]}}
 )
 
