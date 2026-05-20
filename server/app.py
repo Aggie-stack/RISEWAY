@@ -7,9 +7,9 @@ import jwt
 import bcrypt
 from datetime import datetime, timedelta, timezone
 from functools import wraps
-from flask_migrate import Migrate
-from flask_sqlalchemy import SQLAlchemy
+
 from flask_restful import Api
+from extensions import db, migrate
 
 from flask import Flask, request, jsonify
 from flask_socketio import SocketIO, emit
@@ -24,13 +24,18 @@ from database import create_tables
 # ─────────────────────────────────────────────
 
 app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URI')
+
+
+app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+    'DATABASE_URL',
+    "sqlite:///riseway.db"
+)
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.json.compact = False
 
-db = SQLAlchemy()
-migrate = Migrate(app, db)
 db.init_app(app)
+migrate.init_app(app, db)
 
 api = Api(app)
 

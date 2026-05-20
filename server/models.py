@@ -8,14 +8,99 @@ lands on Feb 28 / Mar 28 correctly.
 
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime, date, timedelta
 from typing import Optional
+from database import get_db
 
 import bcrypt
 from dateutil.relativedelta import relativedelta
 
-from database import get_db
+from datetime import datetime
+from extensions import db
+
+class User(db.Model):
+    __tablename__ = "users"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    username = db.Column(
+        db.String(100),
+        unique=True,
+        nullable=False
+    )
+
+    password = db.Column(
+        db.String(255),
+        nullable=False
+    )
+
+    role = db.Column(
+        db.String(50),
+        nullable=False
+    )
+
+
+class Student(db.Model):
+    __tablename__ = "students"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    admission_number = db.Column(
+        db.String(100),
+        unique=True
+    )
+
+    name = db.Column(
+        db.String(255),
+        nullable=False
+    )
+
+    phone = db.Column(db.String(50))
+    email = db.Column(db.String(120))
+
+    gender = db.Column(db.String(20))
+    mode = db.Column(db.String(50))
+    level = db.Column(db.String(50))
+    course = db.Column(db.String(100))
+
+    membership = db.Column(
+        db.Boolean,
+        default=False
+    )
+
+    membership_no = db.Column(db.String(100))
+
+    created_at = db.Column(
+        db.DateTime,
+        default=datetime.utcnow
+    )
+
+    payments = db.relationship(
+        "Payment",
+        backref="student",
+        lazy=True,
+        cascade="all, delete"
+    )
+
+
+class Payment(db.Model):
+    __tablename__ = "payments"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    student_id = db.Column(
+        db.Integer,
+        db.ForeignKey("students.id"),
+        nullable=False
+    )
+
+    amount = db.Column(db.Float, nullable=False)
+
+    date_paid = db.Column(db.String(20))
+    duration = db.Column(db.Integer)
+
+    due_date = db.Column(db.String(20))
+    renewal_no = db.Column(db.String(100))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -140,38 +225,40 @@ def _enrich_student(row: dict) -> dict:
     return row
 
 
-def create_student(data: dict) -> Optional[dict]:
-    conn = get_db()
-    cur = conn.execute(
-        """
-        INSERT INTO students
-            (admission_number, name, phone, email, gender, mode, level, course, membership, membership_no)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            data.get("admission_number"),
-            data["name"],
-            data.get("phone", ""),
-            data.get("email", ""),
-            data.get("gender"),
-            data.get("mode"),
-            data.get("level"),
-            data.get("course", ""),
-            1 if data.get("membership") else 0,
-            data.get("membership_no", "") if data.get("membership") else "",
-        ),
+def create_student(data):
+    student = Student(
+        name=data["name"],
+        phone=data.get("phone", ""),
+        email=data.get("email", ""),
+        gender=data.get("gender"),
+        mode=data.get("mode"),
+        level=data.get("level"),
+        course=data.get("course", ""),
+        membership=data.get("membership", False),
+        membership_no=data.get("membership_no", "")
     )
-    student_id = cur.lastrowid
 
-    # Write the auto-generated admission number back to the row
-    admission_number = _admission_number(student_id)
-    conn.execute(
-        "UPDATE students SET admission_number = ? WHERE id = ?",
-        (admission_number, student_id),
-    )
-    conn.commit()
-    conn.close()
-    return get_student_by_id(student_id)
+    db.session.add(student)
+    db.session.commit()
+
+    # Generate admission number after ID exists
+    student.admission_number = f"RTC-{str(student.id).zfill(3)}"
+
+    db.session.commit()
+
+    return {
+        "id": student.id,
+        "admission_number": student.admission_number,
+        "name": student.name,
+        "phone": student.phone,
+        "email": student.email,
+        "gender": student.gender,
+        "mode": student.mode,
+        "level": student.level,
+        "course": student.course,
+        "membership": student.membership,
+        "membership_no": student.membership_no,
+    }
 
 
 def get_all_students(search: Optional[str] = None) -> list[dict]:
