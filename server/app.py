@@ -36,9 +36,6 @@ app.json.compact = False
 db.init_app(app)
 migrate.init_app(app, db)
 
-with app.app_context():
-    db.create_all()
-
 api = Api(app)
 
 socketio = SocketIO(
@@ -483,10 +480,15 @@ def renewals_due():
 # ─────────────────────────────────────────────
 
 if __name__ == "__main__":
-    init_db()
+
+    with app.app_context():
+        db.create_all()
+        init_db()
+
     socketio.run(
         app,
         host="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
         debug=False
     )
+    
