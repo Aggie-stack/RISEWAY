@@ -1,22 +1,29 @@
 """
-models.py – thin data-access layer on top of SQLite.
+models.py – SQLAlchemy-powered data layer.
 
-Each function accepts / returns plain dicts so the Flask routes stay clean.
-Due-date arithmetic uses dateutil.relativedelta so that "1 month from Jan 31"
-lands on Feb 28 / Mar 28 correctly.
+Fully compatible with:
+- Flask-SQLAlchemy
+- PostgreSQL
+- SQLite
+- Render deployment
+
+No raw SQLite connections are used.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from typing import Optional
-from database import get_db
 
 import bcrypt
 from dateutil.relativedelta import relativedelta
 
-from datetime import datetime
 from extensions import db
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Models
+# ══════════════════════════════════════════════════════════════════════════════
 
 class User(db.Model):
     __tablename__ = "users"
@@ -39,6 +46,13 @@ class User(db.Model):
         nullable=False
     )
 
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "username": self.username,
+            "role": self.role,
+        }
+
 
 class Student(db.Model):
     __tablename__ = "students"
@@ -56,11 +70,18 @@ class Student(db.Model):
     )
 
     phone = db.Column(db.String(50))
-    email = db.Column(db.String(120))
+
+    email = db.Column(
+        db.String(120),
+        default=""
+    )
 
     gender = db.Column(db.String(20))
+
     mode = db.Column(db.String(50))
+
     level = db.Column(db.String(50))
+
     course = db.Column(db.String(100))
 
     membership = db.Column(
@@ -79,8 +100,34 @@ class Student(db.Model):
         "Payment",
         backref="student",
         lazy=True,
-        cascade="all, delete"
+        cascade="all, delete-orphan"
     )
+
+    def to_dict(self):
+        latest_payment = (
+            Payment.query
+            .filter_by(student_id=self.id)
+            .order_by(Payment.id.desc())
+            .first()
+        )
+
+        due_date = latest_payment.due_date if latest_payment else None
+
+        return {
+            "id": self.id,
+            "admission_number": self.admission_number,
+            "name": self.name,
+            "phone": self.phone,
+            "email": self.email,
+            "gender": self.gender,
+            "mode": self.mode,
+            "level": self.level,
+            "course": self.course,
+            "membership": self.membership,
+            "membership_no": self.membership_no,
+            "status": _student_status(due_date),
+            "created_at": self.created_at.isoformat(),
+        }
 
 
 class Payment(db.Model):
@@ -94,27 +141,60 @@ class Payment(db.Model):
         nullable=False
     )
 
-    amount = db.Column(db.Float, nullable=False)
+    amount = db.Column(
+        db.Float,
+        nullable=False
+    )
 
-    date_paid = db.Column(db.String(20))
-    duration = db.Column(db.Integer)
+    date_paid = db.Column(
+        db.String(20),
+        nullable=False
+    )
 
-    due_date = db.Column(db.String(20))
-    renewal_no = db.Column(db.String(100))
+    duration = db.Column(
+        db.Integer,
+        nullable=False
+    )
+
+    due_date = db.Column(
+        db.String(20),
+        nullable=False
+    )
+
+    renewal_no = db.Column(
+        db.String(100),
+        default=""
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "student_id": self.student_id,
+            "amount": self.amount,
+            "date_paid": self.date_paid,
+            "duration": self.duration,
+            "due_date": self.due_date,
+            "renewal_no": self.renewal_no,
+        }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _row_to_dict(row: sqlite3.Row) -> dict:
-    return dict(row) if row else {}
-
-
 def _compute_due_date(date_paid: str, duration: int) -> str:
-    """Return YYYY-MM-DD string for date_paid + duration months."""
-    base = datetime.strptime(date_paid, "%Y-%m-%d").date()
-    return (base + relativedelta(months=duration)).strftime("%Y-%m-%d")
+    """
+    Return YYYY-MM-DD string for:
+    date_paid + duration months
+    """
+    base = datetime.strptime(
+        date_paid,
+        "%Y-%m-%d"
+    ).date()
+
+    return (
+        base + relativedelta(months=duration)
+    ).strftime("%Y-%m-%d")
 
 
 def _renewal_no(payment_id: int) -> str:
@@ -122,21 +202,30 @@ def _renewal_no(payment_id: int) -> str:
 
 
 def _admission_number(student_id: int) -> str:
-    """Generate admission number from student ID."""
     return f"RTC-{str(student_id).zfill(3)}"
 
 
 def _student_status(due_date: Optional[str]) -> str:
     """
-    Active     → due_date is today or in the future
-    Expired    → due_date is in the past
-    No Payment → no payment record exists
+    Active     → due_date is today or future
+    Expired    → due_date passed
+    No Payment → no payment exists
     """
+
     if not due_date:
         return "No Payment"
+
     try:
-        d = datetime.strptime(due_date, "%Y-%m-%d").date()
-        return "Active" if d >= date.today() else "Expired"
+        d = datetime.strptime(
+            due_date,
+            "%Y-%m-%d"
+        ).date()
+
+        if d >= date.today():
+            return "Active"
+
+        return "Expired"
+
     except ValueError:
         return "No Payment"
 
@@ -145,87 +234,68 @@ def _student_status(due_date: Optional[str]) -> str:
 # Auth / Users
 # ══════════════════════════════════════════════════════════════════════════════
 
-def create_user(username: str, hashed_password: str, role: str) -> int:
-    """Insert a new user row. Returns the new user's id."""
-    conn = get_db()
-    cur = conn.execute(
-        "INSERT INTO users (username, password, role) VALUES (?, ?, ?)",
-        (username, hashed_password, role),
+def create_user(username: str, password: str, role: str):
+    hashed = bcrypt.hashpw(
+        password.encode(),
+        bcrypt.gensalt()
+    ).decode()
+
+    user = User(
+        username=username,
+        password=hashed,
+        role=role
     )
-    user_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-    return user_id
+
+    db.session.add(user)
+    db.session.commit()
+
+    return user.to_dict()
 
 
-def get_user_by_username(username: str) -> Optional[dict]:
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM users WHERE username = ?", (username,)
-    ).fetchone()
-    conn.close()
-    return _row_to_dict(row) if row else None
+def get_user_by_username(username: str):
+    user = User.query.filter_by(
+        username=username
+    ).first()
+
+    return user
+
+
+def get_user_by_id(user_id: int):
+    user = User.query.get(user_id)
+
+    return user
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return bcrypt.checkpw(plain.encode(), hashed.encode())
-
-
-def update_user_password(user_id: int, new_hashed: str) -> None:
-    """Store an already-hashed password (hashing is done in the caller)."""
-    conn = get_db()
-    conn.execute(
-        "UPDATE users SET password = ? WHERE id = ?", (new_hashed, user_id)
+    return bcrypt.checkpw(
+        plain.encode(),
+        hashed.encode()
     )
-    conn.commit()
-    conn.close()
 
 
-def get_user_by_id(user_id: int) -> Optional[dict]:
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM users WHERE id = ?", (user_id,)
-    ).fetchone()
-    conn.close()
-    return _row_to_dict(row) if row else None
+def update_user_password(user_id: int, new_password: str):
+    user = User.query.get(user_id)
+
+    if not user:
+        return False
+
+    hashed = bcrypt.hashpw(
+        new_password.encode(),
+        bcrypt.gensalt()
+    ).decode()
+
+    user.password = hashed
+
+    db.session.commit()
+
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Students
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _enrich_student(row: dict) -> dict:
-    """Attach the latest payment data and computed status to a student row."""
-    conn = get_db()
-    pay = conn.execute(
-        """
-        SELECT id, amount, date_paid, duration, due_date, renewal_no
-        FROM   payments
-        WHERE  student_id = ?
-        ORDER  BY id DESC
-        LIMIT  1
-        """,
-        (row["id"],),
-    ).fetchone()
-    conn.close()
-
-    pay = _row_to_dict(pay) if pay else {}
-    row["payment_id"] = pay.get("id")
-    row["amount"]     = pay.get("amount")
-    row["date_paid"]  = pay.get("date_paid")
-    row["duration"]   = pay.get("duration")
-    row["due_date"]   = pay.get("due_date")
-    row["renewal_no"] = pay.get("renewal_no")
-    row["status"]     = _student_status(pay.get("due_date"))
-
-    # Backfill admission_number for older rows that don't have one stored yet
-    if not row.get("admission_number"):
-        row["admission_number"] = _admission_number(row["id"])
-
-    return row
-
-
-def create_student(data):
+def create_student(data: dict):
     student = Student(
         name=data["name"],
         phone=data.get("phone", ""),
@@ -241,279 +311,307 @@ def create_student(data):
     db.session.add(student)
     db.session.commit()
 
-    # Generate admission number after ID exists
-    student.admission_number = f"RTC-{str(student.id).zfill(3)}"
+    student.admission_number = _admission_number(student.id)
 
     db.session.commit()
 
-    return {
-        "id": student.id,
-        "admission_number": student.admission_number,
-        "name": student.name,
-        "phone": student.phone,
-        "email": student.email,
-        "gender": student.gender,
-        "mode": student.mode,
-        "level": student.level,
-        "course": student.course,
-        "membership": student.membership,
-        "membership_no": student.membership_no,
-    }
+    return student.to_dict()
 
 
-def get_all_students(search: Optional[str] = None) -> list[dict]:
-    conn = get_db()
+def get_all_students(search: Optional[str] = None):
+    query = Student.query
+
     if search:
-        rows = conn.execute(
-            """
-            SELECT * FROM students
-            WHERE  name         LIKE ? OR
-                   phone        LIKE ? OR
-                   course       LIKE ? OR
-                   admission_number LIKE ?
-            ORDER  BY id DESC
-            """,
-            (f"%{search}%", f"%{search}%", f"%{search}%", f"%{search}%"),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM students ORDER BY id DESC"
-        ).fetchall()
-    conn.close()
-    return [_enrich_student(dict(r)) for r in rows]
+        search_term = f"%{search}%"
 
+        query = query.filter(
+            db.or_(
+                Student.name.ilike(search_term),
+                Student.phone.ilike(search_term),
+                Student.course.ilike(search_term),
+                Student.admission_number.ilike(search_term)
+            )
+        )
 
-def get_student_by_id(student_id: int) -> Optional[dict]:
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM students WHERE id = ?", (student_id,)
-    ).fetchone()
-    conn.close()
-    if not row:
-        return None
-    return _enrich_student(dict(row))
-
-
-def get_student_by_admission_number(admission_number: str) -> Optional[dict]:
-    """Look up a student by their admission number (e.g. RTC-001)."""
-    conn = get_db()
-    row = conn.execute(
-        "SELECT * FROM students WHERE admission_number = ?", (admission_number,)
-    ).fetchone()
-    conn.close()
-    if not row:
-        return None
-    return _enrich_student(dict(row))
-
-
-def update_student(student_id: int, data: dict) -> Optional[dict]:
-    conn = get_db()
-    conn.execute(
-        """
-        UPDATE students
-        SET admission_number=?, name=?, phone=?, email=?, gender=?, mode=?, level=?,
-            course=?, membership=?, membership_no=?
-        WHERE id=?
-        """,
-        (
-            data.get("admission_number"),
-            data.get("name"),
-            data.get("phone", ""),
-            data.get("email", ""),
-            data.get("gender"),
-            data.get("mode"),
-            data.get("level"),
-            data.get("course"),
-            1 if data.get("membership") else 0,
-            data.get("membership_no", "") if data.get("membership") else "",
-            student_id,
-        ),
+    students = (
+        query
+        .order_by(Student.id.desc())
+        .all()
     )
-    conn.commit()
-    conn.close()
-    return get_student_by_id(student_id)
+
+    return [student.to_dict() for student in students]
 
 
-def delete_student(student_id: int) -> bool:
-    conn = get_db()
-    cur = conn.execute("DELETE FROM students WHERE id = ?", (student_id,))
-    conn.commit()
-    conn.close()
-    return cur.rowcount > 0
+def get_student_by_id(student_id: int):
+    student = Student.query.get(student_id)
+
+    return student.to_dict() if student else None
+
+
+def get_student_by_admission_number(admission_number: str):
+    student = Student.query.filter_by(
+        admission_number=admission_number
+    ).first()
+
+    return student.to_dict() if student else None
+
+
+def update_student(student_id: int, data: dict):
+    student = Student.query.get(student_id)
+
+    if not student:
+        return None
+
+    student.name = data.get(
+        "name",
+        student.name
+    )
+
+    student.phone = data.get(
+        "phone",
+        student.phone
+    )
+
+    student.email = data.get(
+        "email",
+        student.email
+    )
+
+    student.gender = data.get(
+        "gender",
+        student.gender
+    )
+
+    student.mode = data.get(
+        "mode",
+        student.mode
+    )
+
+    student.level = data.get(
+        "level",
+        student.level
+    )
+
+    student.course = data.get(
+        "course",
+        student.course
+    )
+
+    student.membership = data.get(
+        "membership",
+        student.membership
+    )
+
+    student.membership_no = data.get(
+        "membership_no",
+        student.membership_no
+    )
+
+    db.session.commit()
+
+    return student.to_dict()
+
+
+def delete_student(student_id: int):
+    student = Student.query.get(student_id)
+
+    if not student:
+        return False
+
+    db.session.delete(student)
+    db.session.commit()
+
+    return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Payments
 # ══════════════════════════════════════════════════════════════════════════════
 
-def create_payment(data: dict) -> dict:
-    """
-    Insert a new payment. Returns the full payment row plus student metadata
-    so the receipt can be built directly from the response.
-    """
+def create_payment(data: dict):
     student_id = int(data["student_id"])
-    amount     = float(data["amount"])
-    date_paid  = data["date_paid"]
-    duration   = int(data["duration"])
-    due_date   = _compute_due_date(date_paid, duration)
 
-    conn = get_db()
+    amount = float(data["amount"])
 
-    cur = conn.execute(
-        """
-        INSERT INTO payments (student_id, amount, date_paid, duration, due_date, renewal_no)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """,
-        (student_id, amount, date_paid, duration, due_date, ""),
+    date_paid = data["date_paid"]
+
+    duration = int(data["duration"])
+
+    due_date = _compute_due_date(
+        date_paid,
+        duration
     )
-    payment_id = cur.lastrowid
-    renewal_no = _renewal_no(payment_id)
-    conn.execute(
-        "UPDATE payments SET renewal_no = ? WHERE id = ?",
-        (renewal_no, payment_id),
+
+    payment = Payment(
+        student_id=student_id,
+        amount=amount,
+        date_paid=date_paid,
+        duration=duration,
+        due_date=due_date,
     )
-    conn.commit()
 
-    student = conn.execute(
-        "SELECT name, course, admission_number FROM students WHERE id = ?", (student_id,)
-    ).fetchone()
-    conn.close()
+    db.session.add(payment)
+    db.session.commit()
 
-    student_name     = student["name"]             if student else ""
-    course           = student["course"]           if student else ""
-    admission_number = student["admission_number"] if student else ""
+    payment.renewal_no = _renewal_no(payment.id)
+
+    db.session.commit()
+
+    student = Student.query.get(student_id)
 
     return {
-        "id":               payment_id,
-        "renewal_no":       renewal_no,
-        "student_id":       student_id,
-        "student_name":     student_name,
-        "admission_number": admission_number,
-        "course":           course,
-        "amount":           amount,
-        "date_paid":        date_paid,
-        "duration":         duration,
-        "due_date":         due_date,
+        "id": payment.id,
+        "renewal_no": payment.renewal_no,
+        "student_id": student_id,
+        "student_name": student.name if student else "",
+        "admission_number": student.admission_number if student else "",
+        "course": student.course if student else "",
+        "amount": payment.amount,
+        "date_paid": payment.date_paid,
+        "duration": payment.duration,
+        "due_date": payment.due_date,
     }
 
 
-def get_payments_by_student(student_id: int) -> list[dict]:
-    conn = get_db()
-    rows = conn.execute(
-        """
-        SELECT p.*, s.name AS student_name, s.course, s.admission_number
-        FROM   payments p
-        JOIN   students s ON s.id = p.student_id
-        WHERE  p.student_id = ?
-        ORDER  BY p.id DESC
-        """,
-        (student_id,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+def get_payments_by_student(student_id: int):
+    payments = (
+        Payment.query
+        .filter_by(student_id=student_id)
+        .order_by(Payment.id.desc())
+        .all()
+    )
+
+    results = []
+
+    for payment in payments:
+        student = Student.query.get(payment.student_id)
+
+        results.append({
+            "id": payment.id,
+            "student_id": payment.student_id,
+            "student_name": student.name if student else "",
+            "course": student.course if student else "",
+            "admission_number": student.admission_number if student else "",
+            "amount": payment.amount,
+            "date_paid": payment.date_paid,
+            "duration": payment.duration,
+            "due_date": payment.due_date,
+            "renewal_no": payment.renewal_no,
+        })
+
+    return results
 
 
-def update_payment(payment_id: int, data: dict) -> Optional[dict]:
-    conn = get_db()
-    row = conn.execute(
-        "SELECT duration, date_paid FROM payments WHERE id = ?", (payment_id,)
-    ).fetchone()
-    if not row:
-        conn.close()
+def update_payment(payment_id: int, data: dict):
+    payment = Payment.query.get(payment_id)
+
+    if not payment:
         return None
 
-    date_paid = data.get("date_paid", row["date_paid"])
-    duration  = int(data.get("duration", row["duration"]))
-    amount    = float(data["amount"]) if "amount" in data else None
-    due_date  = _compute_due_date(date_paid, duration)
+    payment.amount = float(
+        data.get("amount", payment.amount)
+    )
 
-    if amount is not None:
-        conn.execute(
-            "UPDATE payments SET amount=?, date_paid=?, duration=?, due_date=? WHERE id=?",
-            (amount, date_paid, duration, due_date, payment_id),
-        )
-    else:
-        conn.execute(
-            "UPDATE payments SET date_paid=?, duration=?, due_date=? WHERE id=?",
-            (date_paid, duration, due_date, payment_id),
-        )
+    payment.date_paid = data.get(
+        "date_paid",
+        payment.date_paid
+    )
 
-    conn.commit()
-    result = conn.execute(
-        "SELECT * FROM payments WHERE id = ?", (payment_id,)
-    ).fetchone()
-    conn.close()
-    return _row_to_dict(result)
+    payment.duration = int(
+        data.get("duration", payment.duration)
+    )
+
+    payment.due_date = _compute_due_date(
+        payment.date_paid,
+        payment.duration
+    )
+
+    db.session.commit()
+
+    return payment.to_dict()
 
 
-def delete_payment(payment_id: int) -> bool:
-    conn = get_db()
-    cur = conn.execute("DELETE FROM payments WHERE id = ?", (payment_id,))
-    conn.commit()
-    conn.close()
-    return cur.rowcount > 0
+def delete_payment(payment_id: int):
+    payment = Payment.query.get(payment_id)
+
+    if not payment:
+        return False
+
+    db.session.delete(payment)
+    db.session.commit()
+
+    return True
 
 
 def get_recent_payments(days=7):
-    """
-    Return recent payments.
-    - days=None → all payments ever (no date filter)
-    - days=int  → payments in the last N days
-    """
-    conn = get_db()
+    query = Payment.query
 
-    if days is None:
-        rows = conn.execute(
-            """
-            SELECT
-                p.id,
-                p.student_id,
-                s.name   AS student_name,
-                s.course,
-                p.amount,
-                p.date_paid,
-                p.duration,
-                p.due_date,
-                p.renewal_no
-            FROM payments p
-            JOIN students s ON s.id = p.student_id
-            ORDER BY p.date_paid DESC
-            """
-        ).fetchall()
+    if days is not None:
+        cutoff = date.today()
+
+        payments = (
+            query
+            .order_by(Payment.id.desc())
+            .all()
+        )
+
+        filtered = []
+
+        for payment in payments:
+            try:
+                paid_date = datetime.strptime(
+                    payment.date_paid,
+                    "%Y-%m-%d"
+                ).date()
+
+                delta = (cutoff - paid_date).days
+
+                if delta <= days:
+                    filtered.append(payment)
+
+            except Exception:
+                continue
+
+        payments = filtered
+
     else:
-        rows = conn.execute(
-            """
-            SELECT
-                p.id,
-                p.student_id,
-                s.name   AS student_name,
-                s.course,
-                p.amount,
-                p.date_paid,
-                p.duration,
-                p.due_date,
-                p.renewal_no
-            FROM payments p
-            JOIN students s ON s.id = p.student_id
-            WHERE date(p.date_paid) >= date('now', ?)
-            ORDER BY p.date_paid DESC
-            """,
-            (f"-{days} days",),
-        ).fetchall()
+        payments = (
+            query
+            .order_by(Payment.id.desc())
+            .all()
+        )
 
-    conn.close()
-    return [dict(r) for r in rows]
+    results = []
+
+    for payment in payments:
+        student = Student.query.get(payment.student_id)
+
+        results.append({
+            "id": payment.id,
+            "student_id": payment.student_id,
+            "student_name": student.name if student else "",
+            "course": student.course if student else "",
+            "amount": payment.amount,
+            "date_paid": payment.date_paid,
+            "duration": payment.duration,
+            "due_date": payment.due_date,
+            "renewal_no": payment.renewal_no,
+        })
+
+    return results
 
 
-def upsert_payment(data: dict) -> dict:
-    """
-    If data contains a truthy 'id', update that payment.
-    Otherwise create a new one.
-    """
+def upsert_payment(data: dict):
     payment_id = data.get("id")
+
     if payment_id:
-        result = update_payment(int(payment_id), data)
+        result = update_payment(
+            int(payment_id),
+            data
+        )
+
         return result or {}
+
     return create_payment(data)
 
 
@@ -521,263 +619,203 @@ def upsert_payment(data: dict) -> dict:
 # Dashboard
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_dashboard_stats(month: Optional[int] = None) -> dict:
-    conn  = get_db()
-    today = date.today()
+def get_dashboard_stats(month: Optional[int] = None):
+    query_students = Student.query
+    query_payments = Payment.query
 
-    mo_str = f"{int(month):02d}" if month else None
-
-    # ── Total students ────────────────────────────────────────────────────────
     if month:
-        total_students = conn.execute(
-            """
-            SELECT COUNT(DISTINCT s.id)
-            FROM   students s
-            JOIN   payments p ON p.student_id = s.id
-            WHERE  strftime('%m', p.date_paid) = ?
-            """,
-            (mo_str,),
-        ).fetchone()[0]
-    else:
-        total_students = conn.execute(
-            "SELECT COUNT(*) FROM students"
-        ).fetchone()[0]
+        month_str = f"{int(month):02d}"
 
-    # ── Active / Expired ──────────────────────────────────────────────────────
-    if month:
-        latest_payments = conn.execute(
-            """
-            SELECT student_id, MAX(due_date) AS due_date
-            FROM   payments
-            WHERE  strftime('%m', date_paid) = ?
-            GROUP  BY student_id
-            """,
-            (mo_str,),
-        ).fetchall()
-    else:
-        latest_payments = conn.execute(
-            """
-            SELECT student_id, MAX(due_date) AS due_date
-            FROM   payments
-            GROUP  BY student_id
-            """
-        ).fetchall()
+        payments = [
+            p for p in query_payments.all()
+            if p.date_paid[5:7] == month_str
+        ]
 
-    active_count  = sum(
-        1 for r in latest_payments
-        if datetime.fromisoformat(r["due_date"]).date() >= today
-    )
-    expired_count = sum(
-        1 for r in latest_payments
-        if datetime.fromisoformat(r["due_date"]).date() < today
+        student_ids = list(
+            set([p.student_id for p in payments])
+        )
+
+        total_students = len(student_ids)
+
+    else:
+        payments = query_payments.all()
+
+        total_students = query_students.count()
+
+    total_income = sum(
+        payment.amount for payment in payments
     )
 
-    # ── Gender counts ─────────────────────────────────────────────────────────
-    if month:
-        male_students = conn.execute(
-            """
-            SELECT COUNT(DISTINCT s.id)
-            FROM   students s
-            JOIN   payments p ON p.student_id = s.id
-            WHERE  s.gender = 'Male'
-            AND    strftime('%m', p.date_paid) = ?
-            """,
-            (mo_str,),
-        ).fetchone()[0]
+    latest_per_student = {}
 
-        female_students = conn.execute(
-            """
-            SELECT COUNT(DISTINCT s.id)
-            FROM   students s
-            JOIN   payments p ON p.student_id = s.id
-            WHERE  s.gender = 'Female'
-            AND    strftime('%m', p.date_paid) = ?
-            """,
-            (mo_str,),
-        ).fetchone()[0]
-    else:
-        male_students = conn.execute(
-            "SELECT COUNT(*) FROM students WHERE gender = 'Male'"
-        ).fetchone()[0]
-        female_students = conn.execute(
-            "SELECT COUNT(*) FROM students WHERE gender = 'Female'"
-        ).fetchone()[0]
+    for payment in payments:
+        latest_per_student[payment.student_id] = payment
 
-    # ── Total income ──────────────────────────────────────────────────────────
-    if month:
-        total_income = conn.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM payments WHERE strftime('%m', date_paid) = ?",
-            (mo_str,),
-        ).fetchone()[0]
-    else:
-        total_income = conn.execute(
-            "SELECT COALESCE(SUM(amount),0) FROM payments"
-        ).fetchone()[0]
+    active_students = 0
+    expired_students = 0
 
-    # ── Monthly income bars ───────────────────────────────────────────────────
+    for payment in latest_per_student.values():
+        status = _student_status(payment.due_date)
+
+        if status == "Active":
+            active_students += 1
+
+        elif status == "Expired":
+            expired_students += 1
+
     if month:
-        monthly_rows = conn.execute(
-            """
-            SELECT strftime('%m', date_paid) AS mo,
-                   SUM(amount)              AS total
-            FROM   payments
-            WHERE  strftime('%m', date_paid) = ?
-            GROUP  BY mo
-            """,
-            (mo_str,),
-        ).fetchall()
+        male_students = Student.query.filter_by(
+            gender="Male"
+        ).count()
+
+        female_students = Student.query.filter_by(
+            gender="Female"
+        ).count()
+
     else:
-        monthly_rows = conn.execute(
-            """
-            SELECT strftime('%m', date_paid) AS mo,
-                   SUM(amount)              AS total
-            FROM   payments
-            GROUP  BY mo
-            ORDER  BY mo
-            """
-        ).fetchall()
+        male_students = Student.query.filter_by(
+            gender="Male"
+        ).count()
+
+        female_students = Student.query.filter_by(
+            gender="Female"
+        ).count()
 
     month_names = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+        "Jan", "Feb", "Mar", "Apr",
+        "May", "Jun", "Jul", "Aug",
+        "Sep", "Oct", "Nov", "Dec"
     ]
+
+    monthly_income = {}
+
+    for payment in Payment.query.all():
+        month_no = int(payment.date_paid[5:7])
+
+        monthly_income.setdefault(month_no, 0)
+
+        monthly_income[month_no] += payment.amount
+
     classes = [
-        {"name": month_names[int(r["mo"]) - 1], "income": r["total"]}
-        for r in monthly_rows
+        {
+            "name": month_names[m - 1],
+            "income": income
+        }
+        for m, income in monthly_income.items()
     ]
 
-    # ── Mode of study ─────────────────────────────────────────────────────────
-    if month:
-        mode_rows = conn.execute(
-            """
-            SELECT s.mode AS name, COUNT(DISTINCT s.id) AS value
-            FROM   students s
-            JOIN   payments p ON p.student_id = s.id
-            WHERE  s.mode IS NOT NULL
-            AND    strftime('%m', p.date_paid) = ?
-            GROUP  BY s.mode
-            """,
-            (mo_str,),
-        ).fetchall()
-    else:
-        mode_rows = conn.execute(
-            """
-            SELECT mode AS name, COUNT(*) AS value
-            FROM   students
-            WHERE  mode IS NOT NULL
-            GROUP  BY mode
-            """
-        ).fetchall()
+    mode_counts = {}
 
-    mode_gender = [dict(r) for r in mode_rows]
+    for student in Student.query.all():
+        if student.mode:
+            mode_counts.setdefault(student.mode, 0)
+            mode_counts[student.mode] += 1
 
-    # ── Student levels ────────────────────────────────────────────────────────
-    if month:
-        level_rows = conn.execute(
-            """
-            SELECT s.level AS name, COUNT(DISTINCT s.id) AS value
-            FROM   students s
-            JOIN   payments p ON p.student_id = s.id
-            WHERE  s.level IS NOT NULL
-            AND    strftime('%m', p.date_paid) = ?
-            GROUP  BY s.level
-            """,
-            (mo_str,),
-        ).fetchall()
-    else:
-        level_rows = conn.execute(
-            """
-            SELECT level AS name, COUNT(*) AS value
-            FROM   students
-            WHERE  level IS NOT NULL
-            GROUP  BY level
-            """
-        ).fetchall()
+    mode_gender = [
+        {"name": k, "value": v}
+        for k, v in mode_counts.items()
+    ]
 
-    level_gender = [dict(r) for r in level_rows]
+    level_counts = {}
 
-    conn.close()
+    for student in Student.query.all():
+        if student.level:
+            level_counts.setdefault(student.level, 0)
+            level_counts[student.level] += 1
+
+    level_gender = [
+        {"name": k, "value": v}
+        for k, v in level_counts.items()
+    ]
 
     return {
-        "total_students":   total_students,
-        "total_income":     total_income,
-        "active_students":  active_count,
-        "expired_students": expired_count,
-        "male_students":    male_students,
-        "female_students":  female_students,
-        "classes":          classes,
-        "mode_gender":      mode_gender,
-        "level_gender":     level_gender,
+        "total_students": total_students,
+        "total_income": total_income,
+        "active_students": active_students,
+        "expired_students": expired_students,
+        "male_students": male_students,
+        "female_students": female_students,
+        "classes": classes,
+        "mode_gender": mode_gender,
+        "level_gender": level_gender,
     }
 
 
-def get_course_stats(month: Optional[int] = None) -> list[dict]:
-    """
-    Enrolment counts per course.
-    - month=None → all students ever
-    - month=int  → students who paid in that month
-    Returns rows with keys: name, count
-    """
-    conn = get_db()
+def get_course_stats(month: Optional[int] = None):
+    students = Student.query.all()
 
     if month:
-        mo_str = f"{int(month):02d}"
-        rows = conn.execute(
-            """
-            SELECT
-                s.course             AS name,
-                COUNT(DISTINCT s.id) AS count
-            FROM students s
-            JOIN payments p ON p.student_id = s.id
-            WHERE s.course IS NOT NULL
-            AND   s.course != ''
-            AND   strftime('%m', p.date_paid) = ?
-            GROUP BY s.course
-            ORDER BY count DESC
-            """,
-            (mo_str,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            """
-            SELECT
-                course   AS name,
-                COUNT(*) AS count
-            FROM students
-            WHERE course IS NOT NULL
-            AND   course != ''
-            GROUP BY course
-            ORDER BY count DESC
-            """
-        ).fetchall()
+        month_str = f"{int(month):02d}"
 
-    conn.close()
-    return [dict(r) for r in rows]
+        valid_student_ids = set()
+
+        for payment in Payment.query.all():
+            if payment.date_paid[5:7] == month_str:
+                valid_student_ids.add(payment.student_id)
+
+        students = [
+            s for s in students
+            if s.id in valid_student_ids
+        ]
+
+    counts = {}
+
+    for student in students:
+        if student.course:
+            counts.setdefault(student.course, 0)
+            counts[student.course] += 1
+
+    return [
+        {
+            "name": course,
+            "count": count
+        }
+        for course, count in counts.items()
+    ]
 
 
-def get_renewals_due() -> list[dict]:
-    """
-    Students whose latest payment due_date falls between today and
-    7 days from now (strictly upcoming, not already expired).
-    """
-    conn = get_db()
+def get_renewals_due():
+    today = date.today()
 
-    rows = conn.execute(
-        """
-        SELECT
-            s.id             AS student_id,
-            s.name           AS student_name,
-            s.admission_number,
-            s.course,
-            p.due_date,
-            p.amount,
-            p.renewal_no
-        FROM payments p
-        JOIN students s ON s.id = p.student_id
-        WHERE p.due_date BETWEEN date('now') AND date('now', '+7 days')
-        ORDER BY p.due_date ASC
-        """
-    ).fetchall()
+    upcoming = []
 
-    conn.close()
-    return [dict(r) for r in rows]
+    payments = Payment.query.all()
+
+    for payment in payments:
+        try:
+            due = datetime.strptime(
+                payment.due_date,
+                "%Y-%m-%d"
+            ).date()
+
+            delta = (due - today).days
+
+            if 0 <= delta <= 7:
+                student = Student.query.get(
+                    payment.student_id
+                )
+
+                upcoming.append({
+                    "student_id": payment.student_id,
+                    "student_name": student.name if student else "",
+                    "admission_number": (
+                        student.admission_number
+                        if student else ""
+                    ),
+                    "course": (
+                        student.course
+                        if student else ""
+                    ),
+                    "due_date": payment.due_date,
+                    "amount": payment.amount,
+                    "renewal_no": payment.renewal_no,
+                })
+
+        except Exception:
+            continue
+
+    upcoming.sort(
+        key=lambda x: x["due_date"]
+    )
+
+    return upcoming

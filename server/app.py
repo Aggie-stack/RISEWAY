@@ -16,7 +16,6 @@ from flask_socketio import SocketIO, emit
 from flask_cors import CORS
 
 import models
-from database import create_tables
 
 
 # ─────────────────────────────────────────────
@@ -36,6 +35,9 @@ app.json.compact = False
 
 db.init_app(app)
 migrate.init_app(app, db)
+
+with app.app_context():
+    db.create_all()
 
 api = Api(app)
 
@@ -117,7 +119,6 @@ def role_required(*roles):
 
 def init_db():
     print("INIT DB RUNNING")
-    create_tables()
 
     if not models.get_user_by_username("director"):
         users = [
@@ -154,12 +155,15 @@ def login():
     if not user:
         return jsonify({"error": "Invalid credentials"}), 401
 
-    if not bcrypt.checkpw(password.encode(), user["password"].encode()):
+    if not bcrypt.checkpw(password.encode(), user.password.encode()):
         return jsonify({"error": "Invalid credentials"}), 401
 
-    token = make_token(user["id"], user["role"])
+    token = make_token(user.id, user.role)
 
-    return jsonify({"token": token, "role": user["role"]}), 200
+    return jsonify({
+        "token": token,
+        "role": user.role
+    }), 200
 
 
 @app.route("/api/change-password", methods=["POST"])
