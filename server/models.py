@@ -126,6 +126,7 @@ class Student(db.Model):
             "membership": self.membership,
             "membership_no": self.membership_no,
 
+            "payment_id": latest_payment.id if latest_payment else None,
             "amount": latest_payment.amount if latest_payment else None,
             "date_paid": latest_payment.date_paid if latest_payment else None,
             "duration": latest_payment.duration if latest_payment else None,
