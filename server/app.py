@@ -42,8 +42,7 @@ api = Api(app)
 
 socketio = SocketIO(
     app,
-    cors_allowed_origins="https://riseway.vercel.app",
-    async_mode="eventlet"
+    cors_allowed_origins="https://riseway.vercel.app"
 )
 
 CORS(
