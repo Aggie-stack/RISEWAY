@@ -125,6 +125,13 @@ class Student(db.Model):
             "course": self.course,
             "membership": self.membership,
             "membership_no": self.membership_no,
+
+            "amount": latest_payment.amount if latest_payment else None,
+            "date_paid": latest_payment.date_paid if latest_payment else None,
+            "duration": latest_payment.duration if latest_payment else None,
+            "due_date": latest_payment.due_date if latest_payment else None,
+            "renewal_no": latest_payment.renewal_no if latest_payment else None,
+
             "status": _student_status(due_date),
             "created_at": self.created_at.isoformat(),
         }
