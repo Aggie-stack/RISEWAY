@@ -1386,4 +1386,135 @@ h2 {
   color: #007bff;
   font-weight: 600;
 }
+/* ================= MOBILE RESPONSIVE FIXES ================= */
 
+/* Tablets */
+@media (max-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .modal-content:has(table) {
+    width: 95%;
+  }
+}
+
+/* Phones */
+@media (max-width: 768px) {
+
+  /* Layout */
+  .layout {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    height: auto;
+    position: relative;
+  }
+
+  .main {
+    padding: 14px;
+  }
+
+  /* Dashboard */
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  /* Tables */
+  .table-wrapper {
+    overflow-x: auto;
+  }
+
+  .modern-table {
+    min-width: 700px;
+  }
+
+  /* Search row */
+  .search-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .search-box {
+    width: 100%;
+  }
+
+  /* Modal */
+  .modal-content {
+    width: 95%;
+    padding: 16px;
+  }
+
+  .modal-content table {
+    font-size: 12px;
+  }
+
+  /* Login page */
+  .login-card {
+    flex-direction: column;
+    width: 95%;
+  }
+
+  .login-brand {
+    width: 100%;
+    padding: 24px;
+  }
+
+  .login-form-panel {
+    padding: 24px;
+  }
+}
+
+/* Small phones */
+@media (max-width: 480px) {
+
+  .page-title {
+    font-size: 1.2rem;
+  }
+
+  button {
+    width: 100%;
+  }
+
+  .icon-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  .payment-actions {
+    gap: 4px;
+  }
+
+  input, select {
+    font-size: 13px;
+  }
+}
+.table-wrapper {
+  overflow-x: auto;
+}@media (max-width: 768px) {
+  .sidebar {
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+  }
+
+  .sidebar-nav {
+    flex-direction: row;
+    gap: 8px;
+  }
+
+  .sidebar-link {
+    white-space: nowrap;
+  }
+}
+@media (max-width: 768px) {
+  .modal-content:has(table) {
+    overflow-x: auto;
+  }
+
+  .modal-content table {
+    min-width: 600px;
+  }
+}
