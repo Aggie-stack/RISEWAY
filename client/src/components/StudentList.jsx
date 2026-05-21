@@ -80,9 +80,8 @@ function StudentList({ refresh, triggerRefresh }) {
     });
   };
 
-  const handleUpdateStudent = async () => {
-    await API.put(`/students/${editStudent.id}`, editStudent);
-    setEditStep(2);
+  const handleUpdateStudent = () => {
+   setEditStep(2);
   };
 
   const handleSaveAll = async () => {
@@ -108,28 +107,54 @@ function StudentList({ refresh, triggerRefresh }) {
 
   // ─── Payment history ─────────────────────────────────────────────────────────
 
-  const openPaymentHistory = async (student) => {
+ const openPaymentHistory = async (student) => {
+  try {
     setSelectedStudent(student);
+
     const res = await API.get(`/payments/${student.id}`);
     setPaymentHistory(res.data);
-  };
+
+  } catch (error) {
+    console.error("Failed to load payments:", error);
+    setPaymentHistory([]);
+  }
+};
 
   const updatePayment = async () => {
+  try {
     await API.put(`/payments/${editPayment.id}`, editPayment);
-    setEditPayment(null);
-    const res = await API.get(`/payments/${selectedStudent.id}`);
-    setPaymentHistory(res.data);
-    fetchStudents();
-    triggerRefresh();
-  };
 
-  const deletePayment = async (id) => {
-    await API.delete(`/payments/${id}`);
-    const res = await API.get(`/payments/${selectedStudent.id}`);
-    setPaymentHistory(res.data);
+    setPaymentHistory((prev) =>
+      prev.map((p) =>
+        p.id === editPayment.id ? editPayment : p
+      )
+    );
+
+    setEditPayment(null);
+
     fetchStudents();
     triggerRefresh();
-  };
+
+  } catch (error) {
+    console.error("Update payment failed:", error);
+  }
+};
+
+ const deletePayment = async (id) => {
+  try {
+    await API.delete(`/payments/${id}`);
+
+    setPaymentHistory((prev) =>
+      prev.filter((p) => p.id !== id)
+    );
+
+    fetchStudents();
+    triggerRefresh();
+
+  } catch (error) {
+    console.error("Delete failed:", error.response?.data || error);
+  }
+};
 
   // ─── Delete ──────────────────────────────────────────────────────────────────
 
