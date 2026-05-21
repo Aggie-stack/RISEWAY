@@ -378,7 +378,7 @@ def upsert_payment():
 
 
 @app.route("/api/payments/<int:payment_id>", methods=["PUT"])
-@role_required("director", "admin")
+@role_required("receptionist")
 def update_payment(payment_id):
     updated = models.update_payment(payment_id, request.get_json() or {})
 
@@ -389,7 +389,7 @@ def update_payment(payment_id):
 
 
 @app.route("/api/payments/<int:payment_id>", methods=["DELETE"])
-@role_required("director", "admin")
+@role_required("receptionist")
 def delete_payment(payment_id):
     deleted = models.delete_payment(payment_id)
 

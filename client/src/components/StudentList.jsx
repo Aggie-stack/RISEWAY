@@ -142,17 +142,23 @@ function StudentList({ refresh, triggerRefresh }) {
 
  const deletePayment = async (id) => {
   try {
-    await API.delete(`/payments/${id}`);
+    const token = localStorage.getItem("token");
+
+    await axios.delete(
+      `https://riseway-app.onrender.com/api/payments/${id}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      }
+    );
 
     setPaymentHistory((prev) =>
       prev.filter((p) => p.id !== id)
     );
 
-    fetchStudents();
-    triggerRefresh();
-
   } catch (error) {
-    console.error("Delete failed:", error.response?.data || error);
+    console.log("Delete failed:", error.response?.data || error);
   }
 };
 
