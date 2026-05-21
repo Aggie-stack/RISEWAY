@@ -125,9 +125,7 @@ def init_db():
             ("recep",    "@recap2026",    "receptionist"),
         ]
 
-        for username, password, role in users:
-            hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-            models.create_user(username, hashed, role)
+        models.create_user(username, password,role)
 
         print("Seeded default users")
     else:
